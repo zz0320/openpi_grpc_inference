@@ -1,0 +1,42 @@
+{
+  "server": {
+    "host": "0.0.0.0",
+    "port": 50052,
+    "max_workers": 10,
+    "device": "cuda",
+    "_comment": "Server 以空闲模式启动，等待 Client 指定模型"
+  },
+  "client": {
+    "server_host": "localhost",
+    "server_port": 50052,
+    "timeout": 30.0,
+    
+    "_comment_model": "Client 指定模型配置",
+    "config_name": "pi05_astribot_lora",
+    "checkpoint_dir": "/root/openpi/checkpoints/pi05_astribot_lora/astribot_lora_exp1/79999",
+    "default_prompt": "clear up the desktop",
+    "device": "cuda",
+    
+    "_comment_control": "控制配置",
+    "control_freq": 30.0,
+    "control_way": "direct"
+  },
+  "inference": {
+    "use_chunk": true,
+    "n_action_steps": 50,
+    "smooth_window": 0,
+    "max_velocity": 0.0
+  },
+  "robot": {
+    "enable_camera": true,
+    "camera_names": ["head", "wrist_left", "wrist_right"],
+    "binarize_gripper": false,
+    "gripper_threshold": 0.5
+  },
+  "logging": {
+    "enabled": true,
+    "log_dir": "./inference_logs",
+    "save_images": true,
+    "image_format": "jpg"
+  }
+}

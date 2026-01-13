@@ -1,0 +1,203 @@
+// openpi_inference.proto
+// OpenPi 推理服务 gRPC 接口定义
+// 支持 Pi0/Pi0.5 模型推理，适用于 Astribot 机器人控制
+
+syntax = "proto3";
+
+package openpi;
+
+// ============================================================================
+// 消息定义
+// ============================================================================
+
+// 观测数据 - 从机器人 Client 发送到推理 Server
+message Observation {
+    // 当前状态向量 (16维: arm_left(7) + arm_right(7) + gripper_left(1) + gripper_right(1))
+    repeated float state = 1;
+    
+    // 图像数据 (用于视觉策略)
+    repeated ImageData images = 2;
+    
+    // 语言指令 (prompt)
+    string prompt = 3;
+    
+    // 时间戳 (Unix timestamp)
+    double timestamp = 4;
+    
+    // Episode 标识
+    int32 episode_id = 5;
+    
+    // 帧索引
+    int32 frame_index = 6;
+    
+    // 额外状态信息 (JSON 格式字符串)
+    string extra_state = 7;
+}
+
+// 图像数据
+message ImageData {
+    // 相机名称 e.g., "head", "wrist_left", "wrist_right", "torso"
+    string camera_name = 1;
+    
+    // 图像数据 (JPEG/PNG 编码)
+    bytes data = 2;
+    
+    // 图像尺寸
+    int32 width = 3;
+    int32 height = 4;
+    
+    // 编码格式 "jpeg", "png", "raw"
+    string encoding = 5;
+}
+
+// 动作指令 - 从推理 Server 返回到机器人 Client
+message Action {
+    // 动作向量 (16维)
+    repeated float values = 1;
+    
+    // 是否是最后一帧
+    bool is_terminal = 2;
+    
+    // 置信度 (可选)
+    float confidence = 3;
+    
+    // 状态码
+    StatusCode status = 4;
+    
+    // 错误消息 (如果有)
+    string error_message = 5;
+    
+    // 服务端帧计数
+    int32 server_frame_index = 6;
+}
+
+// 动作块 - 一次性返回多个 action (用于 action chunking 策略)
+message ActionChunk {
+    // 多个 action，每个 action 是一个 float 数组
+    // actions[i] 对应第 i 步的 action
+    repeated ActionStep actions = 1;
+    
+    // chunk 大小 (action 数量)
+    int32 chunk_size = 2;
+    
+    // action 维度 (每个 action 的 float 数量)
+    int32 action_dim = 3;
+    
+    // 是否是最后一个 chunk (episode 结束)
+    bool is_terminal = 4;
+    
+    // 状态码
+    StatusCode status = 5;
+    
+    // 错误消息 (如果有)
+    string error_message = 6;
+    
+    // 服务端当前帧索引 (chunk 的起始帧)
+    int32 server_frame_index = 7;
+}
+
+// 单步 action (用于 ActionChunk)
+message ActionStep {
+    repeated float values = 1;
+}
+
+// 状态码
+enum StatusCode {
+    OK = 0;
+    ERROR = 1;
+    NOT_READY = 2;
+    EPISODE_END = 3;
+    MODEL_NOT_LOADED = 4;
+    INVALID_INPUT = 5;
+}
+
+// 控制命令
+message ControlCommand {
+    CommandType type = 1;
+    map<string, string> params = 2;
+}
+
+// 命令类型
+enum CommandType {
+    CMD_RESET = 0;
+    CMD_SET_EPISODE = 1;
+    CMD_SET_PROMPT = 2;
+}
+
+// 策略配置 - Client 端发送给 Server 端
+message PolicyConfig {
+    // 训练配置名称 (e.g., "pi05_astribot_lora")
+    string config_name = 1;
+    
+    // Checkpoint 目录路径
+    string checkpoint_dir = 2;
+    
+    // 默认语言指令
+    string default_prompt = 3;
+    
+    // 推理设备 ("cuda", "cpu", "cuda:0" 等)
+    string device = 4;
+}
+
+// 服务状态
+message ServiceStatus {
+    // 服务是否就绪
+    bool is_ready = 1;
+    
+    // 模型/配置名称
+    string model_name = 2;
+    
+    // 当前 episode
+    int32 current_episode = 3;
+    
+    // 当前帧索引
+    int32 current_frame = 4;
+    
+    // Action horizon (chunk size)
+    int32 action_horizon = 5;
+    
+    // Action 维度
+    int32 action_dim = 6;
+    
+    // 状态消息
+    string message = 7;
+    
+    // 当前 prompt
+    string current_prompt = 8;
+    
+    // 模型元数据 (JSON)
+    string metadata_json = 9;
+}
+
+// 空消息
+message Empty {}
+
+// ============================================================================
+// 服务定义
+// ============================================================================
+
+service OpenPiInferenceService {
+    // 配置策略 - Client 连接时发送，指定模型配置和 checkpoint
+    rpc Configure(PolicyConfig) returns (ServiceStatus);
+    
+    // 单次推理 (同步) - 返回 action chunk 的第一个 action
+    rpc Predict(Observation) returns (Action);
+    
+    // Chunk 推理 (同步) - 一次性返回完整的 action chunk
+    // 适用于 action chunking 策略 (Pi0/Pi0.5)
+    // Client 端在本地消费 chunk，用完后再请求新的
+    rpc PredictChunk(Observation) returns (ActionChunk);
+    
+    // 流式推理 (双向流，用于高频控制)
+    rpc StreamPredict(stream Observation) returns (stream Action);
+    
+    // 发送控制命令 (RESET / SET_EPISODE / SET_PROMPT)
+    rpc Control(ControlCommand) returns (ServiceStatus);
+    
+    // 获取服务状态
+    rpc GetStatus(Empty) returns (ServiceStatus);
+    
+    // 重置推理状态
+    rpc Reset(Empty) returns (ServiceStatus);
+}
+

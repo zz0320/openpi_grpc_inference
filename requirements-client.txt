@@ -1,0 +1,20 @@
+# Client 端依赖 (机器人端/Astribot SDK 环境)
+
+# gRPC
+grpcio>=1.50.0
+grpcio-tools>=1.50.0
+protobuf>=4.21.0
+
+# 数值计算
+numpy>=1.21.0
+
+# 图像处理
+Pillow>=9.0.0
+
+# 可选: ROS 支持 (用于相机订阅)
+# rospy (通过 ROS 安装)
+# sensor_msgs (通过 ROS 安装)
+
+# 可选: Astribot SDK
+# core.astribot_api (通过 Astribot SDK 安装)
+

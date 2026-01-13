@@ -1,0 +1,20 @@
+# Server 端依赖 (openpi 环境)
+# 需要先安装 openpi: pip install -e /path/to/openpi
+
+# gRPC
+grpcio>=1.50.0
+grpcio-tools>=1.50.0
+protobuf>=4.21.0
+
+# 数值计算
+numpy>=1.21.0
+
+# 图像处理
+Pillow>=9.0.0
+
+# 配置管理
+tyro>=0.5.0
+
+# 注意: openpi 依赖需要单独安装
+# pip install -e /path/to/openpi
+
