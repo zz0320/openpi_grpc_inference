@@ -153,7 +153,6 @@ python3 -m src.client.inference_client \
 | **`--execute-chassis`** | **执行底盘控制 (25维)** | False |
 | `--no-execute-head` | 禁用头部控制 | False |
 | `--no-execute-torso` | 禁用腰部控制 | False |
-| `--state-includes-chassis` | 输入 state 包含底盘 | False |
 | `--smooth` | 平滑窗口大小 | 0 |
 | `--max-velocity` | 最大速度限制 (rad/frame) | 0 |
 | `--binarize-gripper` | 夹爪二值化 | False |
@@ -192,10 +191,10 @@ python3 -m src.client.inference_client \
 │     (机器人侧)           │                       │    (GPU 服务器)          │
 │                         │                       │                         │
 │  • 指定模型配置          │   Configure           │  • 空闲模式启动          │
-│  • 采集机器人状态 (16维)  │ ──────────────────►   │  • 按需加载模型          │
+│  • 采集机器人状态 (25维)  │ ──────────────────►   │  • 按需加载模型          │
 │  • 采集相机图像          │                       │  • 执行 GPU 推理         │
-│  • 发送观测数据          │   Observation         │  • 返回 action chunk     │
-│  • 接收 action          │ ──────────────────►   │                         │
+│  • 发送观测数据          │   Observation         │  • Delta→Absolute 转换  │
+│  • 接收 action          │ ──────────────────►   │  • 返回 action chunk     │
 │  • 控制机器人执行        │   ActionChunk         │                         │
 │                         │ ◄──────────────────   │                         │
 └─────────────────────────┘                       └─────────────────────────┘
@@ -207,19 +206,21 @@ python3 -m src.client.inference_client \
 Client 指定模型 ─────► Server 加载模型 (首次连接)
        │
        ▼
-机器人状态 (25维)  ─┐
-                   ├──► gRPC 请求 ──► OpenPi Policy ──► actions (10, 25)
-相机图像 (3张)     ─┤                                          │
-                   │                                           │
-语言指令 (prompt) ─┘                                           ▼
-                                                         ActionChunk
-                                                               │
-                      ┌────────────────────────────────────────┘
+机器人状态 (25维)  ─┐                    ┌─────────────────────────────────┐
+                   │                    │ Server 端处理流程:               │
+                   ├──► gRPC 请求 ──►   │  1. Normalize (25维 norm_stats)  │
+相机图像 (3张)     ─┤                    │  2. OpenPi Policy 推理           │
+                   │                    │  3. Unnormalize                  │
+语言指令 (prompt) ─┘                    │  4. AbsoluteActions 转换 ★       │
+                                        │     (delta → absolute)           │
+                                        │  5. 裁剪为 22 维 (去掉 chassis)   │
+                                        └────────────┬────────────────────┘
+                                                     ▼
+                                               ActionChunk
+                                                     │
+                      ┌──────────────────────────────┘
                       ▼
-              Client 本地消费 action (25维)
-                      │
-                      ▼
-              过滤为 22 维 (如不需要 chassis)
+              Client 本地消费 action (22维)
                       │
                       ▼
               转换为 waypoint 格式
@@ -228,14 +229,36 @@ Client 指定模型 ─────► Server 加载模型 (首次连接)
               发送到 Astribot 执行
 ```
 
-### Action 维度说明
+**★ 重要: AbsoluteActions 转换**
+
+模型训练时使用了 `DeltaActions` 变换，arm 关节输出的是**相对值 (delta)**，必须在推理时通过 `AbsoluteActions` 转换回**绝对值**：
+
+```python
+# 训练配置中的 delta_action_mask (25维):
+# arm_left(7): delta, gripper_left(1): absolute
+# arm_right(7): delta, gripper_right(1): absolute  
+# head(2): delta, torso(4): delta, chassis(3): delta
+delta_action_mask = make_bool_mask(7, -1, 7, -1, 2, 4, 3)
+
+# AbsoluteActions 转换公式:
+# absolute_action = delta_action + current_state * mask
+```
+
+**这就是为什么 Client 必须发送完整的 25 维 state (包含 chassis)，即使不控制 chassis！**
+
+否则维度不匹配会导致 `AbsoluteActions` 转换失败，模型输出的 delta 值会被错误地当作 absolute 值使用。
+
+### State/Action 维度说明
 
 | 格式 | 维度 | 内容 |
 |------|------|------|
+| **Client 发送 State** | **25** | arm_left(7) + arm_right(7) + grippers(2) + head(2) + torso(4) + **chassis(3)** |
 | **OpenPi 模型输出** | **25** | arm_left(7) + arm_right(7) + grippers(2) + head(2) + torso(4) + chassis(3) |
-| 执行维度 (不含底盘) | 22 | arm_left(7) + arm_right(7) + grippers(2) + head(2) + torso(4) |
+| Server 返回 Action | 22 | arm_left(7) + arm_right(7) + grippers(2) + head(2) + torso(4) |
 
-**Action 结构 (25维):**
+> ⚠️ **Client 必须发送 25 维 State**，即使不控制 chassis (后 3 维可填 0)，否则 AbsoluteActions 转换会失败！
+
+**State/Action 结构 (25维):**
 ```
 [0:7]   - arm_left       (7个关节)
 [7:14]  - arm_right      (7个关节)
@@ -243,7 +266,7 @@ Client 指定模型 ─────► Server 加载模型 (首次连接)
 [15]    - gripper_right  (1个)
 [16:18] - head           (2个: pitch, yaw)
 [18:22] - torso          (4个关节)
-[22:25] - chassis        (3个: x, y, theta)
+[22:25] - chassis        (3个: x, y, theta)  ← 必须包含！
 ```
 
 ### 25/22 维控制模式
@@ -316,18 +339,35 @@ inference_logs/
 
 ## ❓ 常见问题
 
-### 1. Server 显示 "等待 Client 配置..."
+### 1. 推理效果很差 / 机器人行为不正确
+
+最常见原因是 **state 维度不匹配**：
+
+| 问题 | 原因 | 解决方案 |
+|------|------|----------|
+| State 只有 22 维 | 缺少 chassis 数据 | 确保 `get_current_state()` 读取并返回 25 维 |
+| AbsoluteActions 失败 | 维度不匹配 | State 必须是 25 维 (与 delta_action_mask 匹配) |
+| 模型输出被当作绝对值 | Delta 未转换 | 检查 Server 端 transforms 是否正确执行 |
+
+**检查方法:**
+```bash
+# 查看推理日志中的 state 维度
+head -1 inference_logs/session_xxx/inference_log.jsonl | python -c "import json,sys; d=json.load(sys.stdin); print(f'state维度: {len(d[\"state\"])}')"
+# 应该输出: state维度: 25
+```
+
+### 2. Server 显示 "等待 Client 配置..."
 
 这是正常的！Server 以空闲模式启动，等待 Client 连接并指定模型。
 
-### 2. Client 连接后 Server 加载模型失败
+### 3. Client 连接后 Server 加载模型失败
 
 检查：
 - `--config` 配置名称是否正确 (如 `pi05_astribot_lora`)
 - `--checkpoint` 路径是否存在
 - Server 端是否能访问该 checkpoint 路径
 
-### 3. 找不到 openpi 模块
+### 4. 找不到 openpi 模块
 
 ```bash
 # 确保在 openpi 目录下使用 uv run，并设置 PYTHONPATH
@@ -335,7 +375,7 @@ cd /root/openpi
 PYTHONPATH=/root/openpi_grpc_inference:$PYTHONPATH uv run python ...
 ```
 
-### 4. protobuf 代码未生成
+### 5. protobuf 代码未生成
 
 ```bash
 # 重新生成
@@ -343,13 +383,13 @@ cd /root/openpi_grpc_inference
 OPENPI_DIR=/root/openpi ./scripts/generate_proto.sh
 ```
 
-### 5. 连接 Server 超时
+### 6. 连接 Server 超时
 
 - 检查 Server 是否正常启动
 - 检查端口是否开放 (防火墙)
 - 检查 IP 地址是否正确
 
-### 6. 推理延迟过高
+### 7. 推理延迟过高
 
 - 确保 Server 使用 GPU (`--device cuda`)
 - 使用 Chunk 模式减少网络调用
