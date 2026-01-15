@@ -54,9 +54,12 @@ except ImportError:
         print("警告: 未找到 protobuf 生成文件，请先运行 scripts/generate_proto.sh")
 
 # 导入通用模块
-from src.common.config import ServerConfig
+from src.common.config import ServerConfig, ActionConfig
 from src.common.constants import (
     OPENPI_ACTION_DIM,
+    OPENPI_ACTION_DIM_NO_CHASSIS,
+    OPENPI_ACTION_DIM_WITH_CHASSIS,
+    OPENPI_MODEL_OUTPUT_DIM,
     DEFAULT_ACTION_HORIZON,
     GRPC_MAX_MESSAGE_LENGTH,
 )
@@ -185,6 +188,10 @@ class OpenPiModelInference:
 class OpenPiInferenceServicer(pb2_grpc.OpenPiInferenceServiceServicer):
     """
     OpenPi 推理服务 gRPC 实现
+    
+    支持:
+    - 25维模型输出过滤为22维（不含底盘）
+    - 可配置是否执行 head/torso/chassis
     """
     
     def __init__(
@@ -193,6 +200,7 @@ class OpenPiInferenceServicer(pb2_grpc.OpenPiInferenceServiceServicer):
         checkpoint_dir: Optional[str] = None,
         default_prompt: Optional[str] = None,
         pytorch_device: Optional[str] = None,
+        action_config: Optional[ActionConfig] = None,
     ):
         """
         初始化服务
@@ -202,9 +210,13 @@ class OpenPiInferenceServicer(pb2_grpc.OpenPiInferenceServiceServicer):
             checkpoint_dir: 预加载的 checkpoint 目录 (可选)
             default_prompt: 默认语言指令
             pytorch_device: PyTorch 设备
+            action_config: Action 配置 (控制维度过滤)
         """
         self.model_inference: Optional[OpenPiModelInference] = None
         self.is_ready = False
+        
+        # Action 配置
+        self.action_config = action_config or ActionConfig()
         
         # 状态
         self.current_episode = 0
@@ -309,6 +321,12 @@ class OpenPiInferenceServicer(pb2_grpc.OpenPiInferenceServiceServicer):
         logger.info(f"收到配置请求: config={request.config_name}, checkpoint={request.checkpoint_dir}")
         
         try:
+            # 解析 action 配置
+            action_config = self._parse_action_config(request)
+            if action_config:
+                self.action_config = action_config
+                logger.info(f"Action 配置: head={action_config.enable_head}, torso={action_config.enable_torso}, chassis={action_config.enable_chassis}")
+            
             self._load_model(
                 config_name=request.config_name,
                 checkpoint_dir=request.checkpoint_dir,
@@ -322,6 +340,67 @@ class OpenPiInferenceServicer(pb2_grpc.OpenPiInferenceServiceServicer):
             traceback.print_exc()
             return self._get_status(f"配置失败: {e}")
     
+    def _parse_action_config(self, request: "pb2.PolicyConfig") -> Optional[ActionConfig]:
+        """
+        解析 action 配置
+        
+        protobuf 字段映射到 ActionConfig:
+        - enable_chassis -> execute_chassis
+        - enable_head -> execute_head  
+        - enable_torso -> execute_torso
+        """
+        if hasattr(request, 'action_config') and request.HasField('action_config'):
+            ac = request.action_config
+            return ActionConfig(
+                # protobuf enable_* 字段映射到 execute_* 参数
+                execute_chassis=ac.enable_chassis if hasattr(ac, 'enable_chassis') else False,
+                execute_head=ac.enable_head if hasattr(ac, 'enable_head') else True,
+                execute_torso=ac.enable_torso if hasattr(ac, 'enable_torso') else True,
+            )
+        return None
+    
+    def _filter_action(self, action: np.ndarray, current_state: Optional[np.ndarray] = None) -> np.ndarray:
+        """
+        根据 action 配置过滤 action
+        
+        将 25 维模型输出过滤为 22 维（不含底盘），或保持 25 维
+        
+        注意: 为了保持维度一致性，禁用的部件不会被移除，而是保持当前值（不变）
+        这样 Client 端始终收到 22 或 25 维的 action
+        
+        Args:
+            action: 原始 action (25维)
+            current_state: 当前状态 (可选，用于保持禁用部件的值)
+            
+        Returns:
+            过滤后的 action (22维或25维)
+        """
+        if len(action) != OPENPI_MODEL_OUTPUT_DIM:
+            # 如果维度不是25，直接返回
+            return action
+        
+        filtered = action.copy()
+        
+        # 如果禁用头部，保持头部不变 (设为 0 或当前值)
+        if not self.action_config.enable_head:
+            if current_state is not None and len(current_state) >= 18:
+                filtered[16:18] = current_state[16:18]
+            else:
+                filtered[16:18] = 0.0
+        
+        # 如果禁用腰部，保持腰部不变
+        if not self.action_config.enable_torso:
+            if current_state is not None and len(current_state) >= 22:
+                filtered[18:22] = current_state[18:22]
+            else:
+                filtered[18:22] = 0.0
+        
+        # 根据是否执行底盘决定输出维度
+        if self.action_config.enable_chassis:
+            return filtered  # 25 维
+        else:
+            return filtered[:22]  # 22 维 (移除底盘)
+    
     def Predict(self, request: "pb2.Observation", context) -> "pb2.Action":
         """单次推理 - 返回 action chunk 的第一个 action"""
         if not self.is_ready:
@@ -332,6 +411,12 @@ class OpenPiInferenceServicer(pb2_grpc.OpenPiInferenceServiceServicer):
         
         try:
             obs_dict = self._build_observation_dict(request)
+            
+            # 获取当前状态 (用于禁用部件时保持原值)
+            current_state = None
+            if request.state:
+                current_state = np.array(list(request.state), dtype=np.float32)
+            
             result = self.model_inference.predict(obs_dict)
             
             # 获取 actions (shape: action_horizon, action_dim)
@@ -345,7 +430,12 @@ class OpenPiInferenceServicer(pb2_grpc.OpenPiInferenceServiceServicer):
             # 返回第一个 action
             first_action = actions[0] if actions.ndim > 1 else actions
             
+            # 过滤 action 维度 (25 -> 22)
+            first_action = self._filter_action(first_action, current_state)
+            
             self.current_frame += 1
+            
+            logger.debug(f"推理结果: dim={len(first_action)}, enable_chassis={self.action_config.enable_chassis}")
             
             return pb2.Action(
                 values=first_action.tolist(),
@@ -372,6 +462,12 @@ class OpenPiInferenceServicer(pb2_grpc.OpenPiInferenceServiceServicer):
         
         try:
             obs_dict = self._build_observation_dict(request)
+            
+            # 获取当前状态 (用于禁用部件时保持原值)
+            current_state = None
+            if request.state:
+                current_state = np.array(list(request.state), dtype=np.float32)
+            
             result = self.model_inference.predict(obs_dict)
             
             # 获取 actions (shape: action_horizon, action_dim)
@@ -386,6 +482,13 @@ class OpenPiInferenceServicer(pb2_grpc.OpenPiInferenceServiceServicer):
             if actions.ndim == 1:
                 actions = actions.reshape(1, -1)
             
+            # 过滤每个 action (25 -> 22)
+            filtered_actions = []
+            for i in range(actions.shape[0]):
+                filtered = self._filter_action(actions[i], current_state)
+                filtered_actions.append(filtered)
+            actions = np.stack(filtered_actions, axis=0)
+            
             chunk_size = actions.shape[0]
             action_dim = actions.shape[1]
             
@@ -396,7 +499,7 @@ class OpenPiInferenceServicer(pb2_grpc.OpenPiInferenceServiceServicer):
             
             self.current_frame += 1
             
-            logger.debug(f"返回 action chunk: size={chunk_size}, dim={action_dim}")
+            logger.debug(f"返回 action chunk: size={chunk_size}, dim={action_dim}, enable_chassis={self.action_config.enable_chassis}")
             
             return pb2.ActionChunk(
                 actions=action_steps,
@@ -475,12 +578,12 @@ class OpenPiInferenceServicer(pb2_grpc.OpenPiInferenceServiceServicer):
     def _get_status(self, message: str = "") -> "pb2.ServiceStatus":
         """构建状态响应"""
         action_horizon = DEFAULT_ACTION_HORIZON
-        action_dim = OPENPI_ACTION_DIM
+        # 返回过滤后的 action 维度
+        action_dim = self.action_config.output_dim
         metadata_json = "{}"
         
         if self.model_inference:
             action_horizon = self.model_inference.action_horizon
-            action_dim = self.model_inference.action_dim
             metadata_json = json.dumps(self.model_inference.metadata)
         
         return pb2.ServiceStatus(
@@ -525,6 +628,7 @@ class InferenceServer:
             checkpoint_dir=self.config.checkpoint_dir,
             default_prompt=self.config.default_prompt,
             pytorch_device=self.config.pytorch_device,
+            action_config=self.config.action_config,
         )
         pb2_grpc.add_OpenPiInferenceServiceServicer_to_server(self.servicer, self.server)
         

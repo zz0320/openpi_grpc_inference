@@ -11,7 +11,9 @@ from .constants import (
     DEFAULT_GRPC_PORT,
     DEFAULT_GRPC_HOST,
     OPENPI_ACTION_DIM,
-    OPENPI_STATE_DIM,
+    OPENPI_ACTION_DIM_NO_CHASSIS,
+    OPENPI_ACTION_DIM_WITH_CHASSIS,
+    OPENPI_MODEL_OUTPUT_DIM,
     DEFAULT_ACTION_HORIZON,
 )
 
@@ -21,29 +23,51 @@ class ActionConfig:
     """
     Action 配置
     
-    OpenPi 模型输出 16 维 action，但执行时可能需要扩展到 22/25 维
+    OpenPi 模型输出 25 维 action，实际使用时可以过滤为 22 维（不含底盘）
+    
+    分离三个概念:
+    1. state_dim: 输入 state 的维度 (22 或 25)，由机器人状态采集决定
+    2. action_dim: 模型输出的 action 维度 (25)，由训练时决定
+    3. execute_chassis: 执行时是否控制底盘 (只影响发送给机器人的命令)
     """
-    # OpenPi 模型输出维度
-    model_action_dim: int = OPENPI_ACTION_DIM
+    # ========== 输入配置 ==========
+    # 输入 state 是否包含底盘 (影响 Client 采集的状态维度)
+    state_includes_chassis: bool = False
     
-    # 执行时是否扩展到完整维度 (添加 head, torso 等)
-    expand_to_full_dim: bool = True
-    
-    # 执行时是否控制底盘
+    # ========== 执行配置 ==========
+    # 执行 action 时是否控制底盘 (即使 action 有 25 维，也可以选择不执行底盘)
     execute_chassis: bool = False
-    
-    # head/torso 默认值 (扩展时使用)
-    default_head: List[float] = field(default_factory=lambda: [0.0, 0.0])
-    default_torso: List[float] = field(default_factory=lambda: [0.0, 0.0, 0.0, 0.0])
+    # 是否执行头部控制
+    execute_head: bool = True
+    # 是否执行腰部控制
+    execute_torso: bool = True
     
     @property
-    def execute_dim(self) -> int:
-        """执行时的 action 维度"""
-        if not self.expand_to_full_dim:
-            return self.model_action_dim
-        if self.execute_chassis:
-            return 25
-        return 22
+    def state_dim(self) -> int:
+        """输入 state 维度"""
+        # 基础: arm_left(7) + arm_right(7) + gripper_left(1) + gripper_right(1) + head(2) + torso(4) = 22
+        return OPENPI_ACTION_DIM_WITH_CHASSIS if self.state_includes_chassis else OPENPI_ACTION_DIM_NO_CHASSIS
+    
+    @property
+    def output_dim(self) -> int:
+        """输出 action 维度 (过滤后)"""
+        return OPENPI_ACTION_DIM_WITH_CHASSIS if self.execute_chassis else OPENPI_ACTION_DIM_NO_CHASSIS
+    
+    # ========== 兼容旧接口 ==========
+    @property
+    def enable_chassis(self) -> bool:
+        """兼容旧接口"""
+        return self.execute_chassis
+    
+    @property
+    def enable_head(self) -> bool:
+        """兼容旧接口"""
+        return self.execute_head
+    
+    @property
+    def enable_torso(self) -> bool:
+        """兼容旧接口"""
+        return self.execute_torso
 
 
 @dataclass
@@ -64,6 +88,9 @@ class ServerConfig:
     
     # PyTorch 设备
     pytorch_device: Optional[str] = None  # e.g., "cuda", "cuda:0"
+    
+    # Action 配置 (默认值，Client 可覆盖)
+    action_config: ActionConfig = field(default_factory=ActionConfig)
 
 
 @dataclass

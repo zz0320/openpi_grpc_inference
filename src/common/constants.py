@@ -3,16 +3,27 @@
 常量定义
 
 OpenPi + Astribot S1 机器人配置
+
+模型输出维度: 25维 [arm_left(7), arm_right(7), gripper_left(1), gripper_right(1), head(2), torso(4), chassis(3)]
+实际使用维度: 22维 (不含底盘)
 """
 
 # ============================================================================
 # OpenPi 模型维度配置
 # ============================================================================
 
-# OpenPi action/state 维度 (Astribot S1)
-# 16维: arm_left(7) + arm_right(7) + gripper_left(1) + gripper_right(1)
-OPENPI_ACTION_DIM = 16
-OPENPI_STATE_DIM = 16
+# 模型输出维度 (完整 25 维)
+OPENPI_MODEL_OUTPUT_DIM = 25
+
+# 执行维度 (不含底盘 22 维)
+OPENPI_ACTION_DIM_NO_CHASSIS = 22
+
+# 执行维度 (含底盘 25 维)
+OPENPI_ACTION_DIM_WITH_CHASSIS = 25
+
+# 默认使用不含底盘的维度
+OPENPI_ACTION_DIM = OPENPI_ACTION_DIM_NO_CHASSIS
+OPENPI_STATE_DIM = OPENPI_ACTION_DIM_NO_CHASSIS
 
 # Action horizon (Pi0/Pi0.5 默认)
 DEFAULT_ACTION_HORIZON = 10
@@ -44,23 +55,29 @@ ACTION_DIM_CONFIG = {
     'chassis': 3,
 }
 
-# OpenPi 模型输出维度配置 (不含 head, torso, chassis)
+# OpenPi 模型输出维度配置 (完整 25 维)
 OPENPI_DIM_CONFIG = {
     'arm_left': 7,
     'arm_right': 7,
     'gripper_left': 1,
     'gripper_right': 1,
+    'head': 2,
+    'torso': 4,
+    'chassis': 3,
 }
 
-# 各部件在 OpenPi action 数组中的起始索引
+# 各部件在 OpenPi action 数组中的起始索引 (25 维格式)
 OPENPI_ACTION_INDEX = {
     'arm_left': (0, 7),        # [0:7]
     'arm_right': (7, 14),      # [7:14]
     'gripper_left': (14, 15),  # [14:15]
     'gripper_right': (15, 16), # [15:16]
+    'head': (16, 18),          # [16:18]
+    'torso': (18, 22),         # [18:22]
+    'chassis': (22, 25),       # [22:25]
 }
 
-# 各部件在 LeRobot V2.0 action 数组中的起始索引
+# 各部件在 LeRobot V2.0 action 数组中的起始索引 (与 OpenPi 一致)
 LEROBOT_ACTION_INDEX = {
     'arm_left': (0, 7),        # [0:7]
     'arm_right': (7, 14),      # [7:14]
@@ -82,6 +99,15 @@ ARM_INDICES = ARM_LEFT_INDICES + ARM_RIGHT_INDICES
 # 夹爪索引
 GRIPPER_LEFT_INDEX = 14
 GRIPPER_RIGHT_INDEX = 15
+
+# 头部索引
+HEAD_INDICES = list(range(16, 18))
+
+# 腰部索引
+TORSO_INDICES = list(range(18, 22))
+
+# 底盘索引
+CHASSIS_INDICES = list(range(22, 25))
 
 # ============================================================================
 # Astribot 部件配置
@@ -158,20 +184,8 @@ GRPC_KEEPALIVE_TIMEOUT_MS = 5000
 # 机器人准备位置 (Ready Position)
 # ============================================================================
 
-# 16维准备位置 (OpenPi 格式)
-# 格式: [arm_left(7), arm_right(7), gripper_left(1), gripper_right(1)]
-READY_POSITION_16 = [
-    # arm_left (7)
-    0.154849, -0.022670, -1.421605, 1.660323, -0.346889, 0.115219, 0.126036,
-    # arm_right (7)
-    -0.161952, -0.022760, 1.418778, 1.660055, 0.343307, 0.115222, -0.123617,
-    # gripper_left (1)
-    0.0,
-    # gripper_right (1)
-    0.0,
-]
-
-# 22维准备位置 (LeRobot V2.0 格式, 不含底盘)
+# 22维准备位置 (不含底盘)
+# 格式: [arm_left(7), arm_right(7), gripper_left(1), gripper_right(1), head(2), torso(4)]
 READY_POSITION_22 = [
     # arm_left (7)
     0.154849, -0.022670, -1.421605, 1.660323, -0.346889, 0.115219, 0.126036,
@@ -185,5 +199,12 @@ READY_POSITION_22 = [
     -0.013063, 0.786349,
     # torso (4)
     0.597646, -1.195333, 0.597043, 0.009469,
+]
+
+# 25维准备位置 (含底盘)
+# 格式: [arm_left(7), arm_right(7), gripper_left(1), gripper_right(1), head(2), torso(4), chassis(3)]
+READY_POSITION_25 = READY_POSITION_22 + [
+    # chassis (3)
+    -0.000426, 0.002229, -0.069377,
 ]
 
