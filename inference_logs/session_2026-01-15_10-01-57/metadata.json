@@ -1,0 +1,22 @@
+{
+  "session_name": "session_2026-01-15_10-01-57",
+  "start_time": "2026-01-15T10:02:05.963784",
+  "start_timestamp": 1768471325.9637885,
+  "episode_id": 0,
+  "config_name": "pi05_astribot_lora",
+  "checkpoint_dir": "/root/openpi/checkpoints/pi05_astribot_lora/astribot_lora_exp1/10000",
+  "default_prompt": "clear up the desktop",
+  "config": {
+    "control_freq": 30.0,
+    "use_chunk": true,
+    "n_action_steps": 30
+  },
+  "save_images": true,
+  "image_format": "jpg",
+  "end_time": "2026-01-15T10:02:53.726211",
+  "end_timestamp": 1768471373.7262182,
+  "total_frames": 901,
+  "total_images_saved": 93,
+  "duration_seconds": 47.76242971420288,
+  "avg_fps": 18.86419944276985
+}

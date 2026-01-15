@@ -293,9 +293,13 @@ def waypoint_to_openpi_state(
         list(torso)             # [18:22]
     )
     
-    if include_chassis and len(waypoint) > 6:
-        chassis = waypoint[6]   # 3
-        state = state + list(chassis)  # [22:25]
+    if include_chassis:
+        if len(waypoint) > 6:
+            chassis = waypoint[6]   # 3
+            state = state + list(chassis)  # [22:25]
+        else:
+            # 没有 chassis 数据时填充 0
+            state = state + [0.0, 0.0, 0.0]  # [22:25]
     
     return state
 
