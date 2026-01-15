@@ -265,7 +265,7 @@ class OpenPiInferenceServicer(pb2_grpc.OpenPiInferenceServiceServicer):
         """
         obs_dict = {}
         
-        # 处理状态 (16维)
+        # 处理状态 (25维: arm_left(7) + arm_right(7) + grippers(2) + head(2) + torso(4) + chassis(3))
         if request.state:
             state = np.array(list(request.state), dtype=np.float32)
             obs_dict["observation.state"] = state

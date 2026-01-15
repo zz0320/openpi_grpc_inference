@@ -1,6 +1,8 @@
 # -*- coding: utf-8 -*-
 """
 通用工具类
+
+支持 25 维 (含底盘) 和 22 维 (不含底盘) action 格式转换
 """
 
 import logging
@@ -12,9 +14,12 @@ from .constants import (
     ARM_INDICES,
     GRIPPER_LEFT_INDEX,
     GRIPPER_RIGHT_INDEX,
-    OPENPI_ACTION_DIM,
-    LEROBOT_ACTION_DIM_NO_CHASSIS,
-    LEROBOT_ACTION_DIM_WITH_CHASSIS,
+    HEAD_INDICES,
+    TORSO_INDICES,
+    CHASSIS_INDICES,
+    OPENPI_ACTION_DIM_NO_CHASSIS,
+    OPENPI_ACTION_DIM_WITH_CHASSIS,
+    OPENPI_ACTION_INDEX,
 )
 
 
@@ -160,109 +165,80 @@ def binarize_gripper_action(
     return action
 
 
-def expand_openpi_action_to_lerobot(
+def filter_action_by_config(
     action: List[float],
-    default_head: List[float] = None,
-    default_torso: List[float] = None,
-    default_chassis: List[float] = None,
-    include_chassis: bool = False
+    execute_head: bool = True,
+    execute_torso: bool = True,
+    execute_chassis: bool = False,
+    current_state: Optional[List[float]] = None
 ) -> List[float]:
     """
-    将 OpenPi 16维 action 扩展为 LeRobot V2.0 格式
+    根据配置过滤 action
     
-    OpenPi 格式 (16维):
-        [arm_left(7), arm_right(7), gripper_left(1), gripper_right(1)]
-    
-    LeRobot V2.0 格式 (22/25维):
-        [arm_left(7), arm_right(7), gripper_left(1), gripper_right(1), head(2), torso(4), chassis(3)?]
+    将不执行的部件设为当前值（保持不变）或零值
     
     Args:
-        action: OpenPi action (16维)
-        default_head: 默认 head 值 (2维)
-        default_torso: 默认 torso 值 (4维)
-        default_chassis: 默认 chassis 值 (3维)
-        include_chassis: 是否包含底盘
+        action: 原始 action (25维)
+        execute_head: 是否执行头部
+        execute_torso: 是否执行腰部
+        execute_chassis: 是否执行底盘
+        current_state: 当前状态 (用于保持不执行部件的值)
         
     Returns:
-        LeRobot V2.0 格式 action (22或25维)
+        过滤后的 action (22维或25维)
     """
-    if len(action) != OPENPI_ACTION_DIM:
-        raise ValueError(f"OpenPi action 必须是 {OPENPI_ACTION_DIM} 维，当前: {len(action)}")
+    if len(action) < OPENPI_ACTION_DIM_NO_CHASSIS:
+        return action
     
-    default_head = default_head or [0.0, 0.0]
-    default_torso = default_torso or [0.0, 0.0, 0.0, 0.0]
-    default_chassis = default_chassis or [0.0, 0.0, 0.0]
+    action = list(action)
     
-    # 扩展: 添加 head 和 torso
-    expanded = list(action) + default_head + default_torso
+    # 如果有当前状态，不执行的部件保持当前值
+    if current_state is not None:
+        if not execute_head and len(current_state) > 16:
+            action[16:18] = current_state[16:18]
+        if not execute_torso and len(current_state) > 18:
+            action[18:22] = current_state[18:22]
     
-    if include_chassis:
-        expanded = expanded + default_chassis
-    
-    return expanded
+    # 是否包含底盘
+    if execute_chassis:
+        # 返回完整 25 维
+        if len(action) >= OPENPI_ACTION_DIM_WITH_CHASSIS:
+            return action[:25]
+        else:
+            # 如果 action 不足 25 维，补零
+            return action + [0.0] * (25 - len(action))
+    else:
+        # 返回 22 维 (去掉底盘)
+        return action[:22]
 
 
-def contract_lerobot_state_to_openpi(state: List[float]) -> List[float]:
+def openpi_action_to_waypoint(
+    action: List[float], 
+    include_chassis: bool = False
+) -> List[List[float]]:
     """
-    将 LeRobot V2.0 格式 state 压缩为 OpenPi 格式
+    将 OpenPi action (25维) 转换为 Astribot waypoint 格式
     
-    LeRobot V2.0 格式 (22/25维):
-        [arm_left(7), arm_right(7), gripper_left(1), gripper_right(1), head(2), torso(4), chassis(3)?]
+    OpenPi 格式 (25维):
+        [arm_left(7), arm_right(7), gripper_left(1), gripper_right(1), head(2), torso(4), chassis(3)]
     
-    OpenPi 格式 (16维):
-        [arm_left(7), arm_right(7), gripper_left(1), gripper_right(1)]
+    Astribot waypoint 格式:
+        [torso(4), arm_left(7), gripper_left(1), arm_right(7), gripper_right(1), head(2), chassis(3)?]
     
     Args:
-        state: LeRobot state (22或25维)
-        
-    Returns:
-        OpenPi 格式 state (16维)
-    """
-    # 只取前16维
-    return list(state[:OPENPI_ACTION_DIM])
-
-
-def openpi_action_to_waypoint(action: List[float], include_chassis: bool = False) -> List[List[float]]:
-    """
-    将 OpenPi action 转换为 Astribot waypoint 格式
-    
-    首先扩展为 LeRobot 格式，然后转换为 waypoint
-    
-    Args:
-        action: OpenPi action (16维)
-        include_chassis: 是否包含底盘
-        
-    Returns:
-        waypoint: [torso(4), arm_left(7), gripper_left(1), arm_right(7), gripper_right(1), head(2), chassis(3)?]
-    """
-    # 先扩展为 LeRobot 格式
-    expanded = expand_openpi_action_to_lerobot(
-        action, 
-        include_chassis=include_chassis
-    )
-    
-    # 转换为 waypoint
-    return lerobot_action_to_waypoint(expanded, include_chassis=include_chassis)
-
-
-def lerobot_action_to_waypoint(action: List[float], include_chassis: bool = False) -> List[List[float]]:
-    """
-    将 LeRobot V2.0 格式的 action 转换为 Astribot waypoint 格式
-    
-    Args:
-        action: LeRobot action 数组 (22或25维)
+        action: OpenPi action (22或25维)
         include_chassis: 是否包含底盘控制
         
     Returns:
-        waypoint: [torso(4), arm_left(7), gripper_left(1), arm_right(7), gripper_right(1), head(2), chassis(3)?]
+        waypoint: 嵌套列表格式
     """
     if isinstance(action, np.ndarray):
         action = action.tolist()
     
     action_len = len(action)
     
-    if action_len < LEROBOT_ACTION_DIM_NO_CHASSIS:
-        raise ValueError(f"Action 长度必须至少为 {LEROBOT_ACTION_DIM_NO_CHASSIS}，当前为 {action_len}")
+    if action_len < OPENPI_ACTION_DIM_NO_CHASSIS:
+        raise ValueError(f"Action 长度必须至少为 {OPENPI_ACTION_DIM_NO_CHASSIS}，当前为 {action_len}")
     
     # 构建 waypoint
     waypoint = [
@@ -274,31 +250,68 @@ def lerobot_action_to_waypoint(action: List[float], include_chassis: bool = Fals
         action[16:18],         # head (2)
     ]
     
-    if include_chassis and action_len >= LEROBOT_ACTION_DIM_WITH_CHASSIS:
+    if include_chassis and action_len >= OPENPI_ACTION_DIM_WITH_CHASSIS:
         waypoint.append(action[22:25])  # chassis (3)
     
     return waypoint
 
 
-def waypoint_to_openpi_state(waypoint: List[List[float]]) -> List[float]:
+def waypoint_to_openpi_state(
+    waypoint: List[List[float]], 
+    include_chassis: bool = False
+) -> List[float]:
     """
     将 Astribot waypoint 格式转换为 OpenPi state 格式
     
+    Astribot waypoint 格式:
+        [torso(4), arm_left(7), gripper_left(1), arm_right(7), gripper_right(1), head(2), chassis(3)?]
+    
+    OpenPi 格式 (25维):
+        [arm_left(7), arm_right(7), gripper_left(1), gripper_right(1), head(2), torso(4), chassis(3)]
+    
     Args:
-        waypoint: [torso(4), arm_left(7), gripper_left(1), arm_right(7), gripper_right(1), head(2), chassis(3)?]
+        waypoint: Astribot waypoint 格式
+        include_chassis: 是否包含底盘
         
     Returns:
-        state: OpenPi state (16维)
+        state: OpenPi state (22或25维)
     """
-    # torso = waypoint[0]         # 4 - 不使用
+    torso = waypoint[0]         # 4
     arm_left = waypoint[1]      # 7
     gripper_left = waypoint[2]  # 1
     arm_right = waypoint[3]     # 7
     gripper_right = waypoint[4] # 1
-    # head = waypoint[5]          # 2 - 不使用
+    head = waypoint[5]          # 2
     
-    # OpenPi 格式: [arm_left, arm_right, gripper_left, gripper_right]
-    state = arm_left + arm_right + gripper_left + gripper_right
+    # 按 OpenPi 顺序组装
+    state = (
+        list(arm_left) +        # [0:7]
+        list(arm_right) +       # [7:14]
+        list(gripper_left) +    # [14:15]
+        list(gripper_right) +   # [15:16]
+        list(head) +            # [16:18]
+        list(torso)             # [18:22]
+    )
+    
+    if include_chassis and len(waypoint) > 6:
+        chassis = waypoint[6]   # 3
+        state = state + list(chassis)  # [22:25]
     
     return state
 
+
+def get_ready_position(include_chassis: bool = False) -> List[float]:
+    """
+    获取机器人准备位置
+    
+    Args:
+        include_chassis: 是否包含底盘
+        
+    Returns:
+        准备位置 (22或25维)
+    """
+    from .constants import READY_POSITION_22, READY_POSITION_25
+    
+    if include_chassis:
+        return list(READY_POSITION_25)
+    return list(READY_POSITION_22)

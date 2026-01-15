@@ -44,26 +44,26 @@ except ImportError:
 # 导入通用模块
 from src.common.config import ClientConfig, ActionConfig
 from src.common.constants import (
-    OPENPI_ACTION_DIM,
-    OPENPI_STATE_DIM,
+    OPENPI_ACTION_DIM_NO_CHASSIS,
+    OPENPI_ACTION_DIM_WITH_CHASSIS,
     DEFAULT_ACTION_HORIZON,
     ASTRIBOT_NAMES_LIST,
     ASTRIBOT_NAMES_LIST_WITH_CHASSIS,
     ASTRIBOT_IMAGE_TOPICS,
     ASTRIBOT_IMAGE_SHAPES,
     GRPC_MAX_MESSAGE_LENGTH,
-    READY_POSITION_16,
     READY_POSITION_22,
+    READY_POSITION_25,
 )
 from src.common.utils import (
     setup_logging,
     ActionSmoother,
     VelocityLimiter,
     binarize_gripper_action,
-    expand_openpi_action_to_lerobot,
-    contract_lerobot_state_to_openpi,
-    lerobot_action_to_waypoint,
+    filter_action_by_config,
+    openpi_action_to_waypoint,
     waypoint_to_openpi_state,
+    get_ready_position,
 )
 
 # 导入日志记录器
@@ -646,8 +646,16 @@ class AstribotController:
         self._frame_index = 0
         self._use_wbc = False
         
-        # Action 配置
+        # Action 配置 (25/22 维控制)
         self._action_config = config.action_config
+        self._state_includes_chassis = config.action_config.state_includes_chassis
+        self._execute_chassis = config.action_config.execute_chassis
+        self._execute_head = config.action_config.execute_head
+        self._execute_torso = config.action_config.execute_torso
+        
+        logger.info(f"  - 输入 state 维度: {config.action_config.state_dim}")
+        logger.info(f"  - 输出 action 维度: {config.action_config.output_dim}")
+        logger.info(f"  - 执行底盘: {self._execute_chassis}, 头部: {self._execute_head}, 腰部: {self._execute_torso}")
         
         # Chunk 模式管理器
         self._chunk_manager: Optional[ActionChunkManager] = None
@@ -682,31 +690,36 @@ class AstribotController:
         self.inference_client.set_prompt(prompt)
         logger.info(f"设置 prompt: {prompt}")
     
+    def _get_names_list(self, include_chassis: bool = None) -> List[str]:
+        """
+        获取机器人部件名称列表
+        
+        Args:
+            include_chassis: 是否包含底盘，None 表示使用 _execute_chassis 配置
+        """
+        use_chassis = include_chassis if include_chassis is not None else self._execute_chassis
+        if use_chassis:
+            return ASTRIBOT_NAMES_LIST_WITH_CHASSIS
+        return ASTRIBOT_NAMES_LIST
+    
     def get_current_state(self) -> List[float]:
         """
-        获取当前状态 (OpenPi 格式: 16维)
+        获取当前状态 (OpenPi 格式: 22 或 25 维)
         
         从机器人本体读取真实关节反馈
+        
+        Returns:
+            state: 22 维 (不含底盘) 或 25 维 (含底盘)
         """
         if self.astribot is not None:
             try:
-                names_list = [
-                    'astribot_arm_left',
-                    'astribot_gripper_left',
-                    'astribot_arm_right',
-                    'astribot_gripper_right',
-                ]
-                
+                # 获取所有部件
+                names_list = self._get_names_list(include_chassis=self._state_includes_chassis)
                 positions = self.astribot.get_current_joints_position(names_list)
                 
-                # positions: [[arm_left(7)], [gripper_left(1)], [arm_right(7)], [gripper_right(1)]]
-                arm_left = positions[0]
-                gripper_left = positions[1]
-                arm_right = positions[2]
-                gripper_right = positions[3]
-                
-                # OpenPi 格式: [arm_left(7), arm_right(7), gripper_left(1), gripper_right(1)]
-                state = arm_left + arm_right + gripper_left + gripper_right
+                # waypoint 格式: [torso(4), arm_left(7), gripper_left(1), arm_right(7), gripper_right(1), head(2), chassis(3)?]
+                # 转换为 OpenPi 格式
+                state = waypoint_to_openpi_state(positions, include_chassis=self._state_includes_chassis)
                 return state
                 
             except Exception as e:
@@ -714,9 +727,11 @@ class AstribotController:
         
         # 回退: 使用追踪的命令位置
         if self._current_waypoint:
-            return waypoint_to_openpi_state(self._current_waypoint)
+            return waypoint_to_openpi_state(self._current_waypoint, include_chassis=self._state_includes_chassis)
         
-        return [0.0] * OPENPI_STATE_DIM
+        # 默认: 返回零值
+        dim = OPENPI_ACTION_DIM_WITH_CHASSIS if self._state_includes_chassis else OPENPI_ACTION_DIM_NO_CHASSIS
+        return [0.0] * dim
     
     def move_to_ready_position(self, duration: float = 5.0) -> bool:
         """移动到准备位置"""
@@ -724,19 +739,19 @@ class AstribotController:
         logger.info("移动到准备位置")
         logger.info("=" * 60)
         
-        # 使用 OpenPi 16维准备位置，扩展到 22 维执行
-        ready_action_16 = READY_POSITION_16
-        ready_action_22 = expand_openpi_action_to_lerobot(
-            ready_action_16,
-            default_head=[-0.013, 0.786],  # 固定头部位置
-            default_torso=[0.598, -1.195, 0.597, 0.009],  # 固定腰部位置
-        )
+        # 根据是否控制底盘选择准备位置
+        if self._execute_chassis:
+            ready_position = READY_POSITION_25
+            logger.info("使用 25 维准备位置 (含底盘)")
+        else:
+            ready_position = READY_POSITION_22
+            logger.info("使用 22 维准备位置 (不含底盘)")
         
-        waypoint = lerobot_action_to_waypoint(ready_action_22, include_chassis=False)
+        waypoint = openpi_action_to_waypoint(ready_position, include_chassis=self._execute_chassis)
         
         if self.astribot:
             self.astribot.move_joints_waypoints(
-                ASTRIBOT_NAMES_LIST,
+                self._get_names_list(),
                 [waypoint],
                 [duration],
                 use_wbc=self._use_wbc
@@ -840,14 +855,23 @@ class AstribotController:
                 gripper_indices=[14, 15]  # OpenPi 格式夹爪索引
             )
         
-        # 扩展为 22 维并转换为 waypoint
-        action_22 = expand_openpi_action_to_lerobot(action)
-        waypoint = lerobot_action_to_waypoint(action_22, include_chassis=False)
+        # 根据配置过滤 action (25维 -> 22维，如果不控制底盘)
+        current_state = self.get_current_state() if not self._execute_head or not self._execute_torso else None
+        filtered_action = filter_action_by_config(
+            action,
+            execute_head=self._execute_head,
+            execute_torso=self._execute_torso,
+            execute_chassis=self._execute_chassis,
+            current_state=current_state
+        )
+        
+        # 转换为 waypoint
+        waypoint = openpi_action_to_waypoint(filtered_action, include_chassis=self._execute_chassis)
         
         # 发送到机器人
         if self.astribot:
             self.astribot.set_joints_position(
-                ASTRIBOT_NAMES_LIST,
+                self._get_names_list(),
                 waypoint,
                 control_way=self.control_way,
                 use_wbc=self._use_wbc
@@ -1052,6 +1076,16 @@ def main():
     parser.add_argument('--n-action-steps', type=int, default=None,
                         help='每个 chunk 使用的 action 数量')
     
+    # Action 配置 (25/22 维控制)
+    parser.add_argument('--execute-chassis', action='store_true',
+                        help='执行底盘控制 (使用 25 维)')
+    parser.add_argument('--no-execute-head', action='store_true',
+                        help='禁用头部控制')
+    parser.add_argument('--no-execute-torso', action='store_true',
+                        help='禁用腰部控制')
+    parser.add_argument('--state-includes-chassis', action='store_true',
+                        help='输入 state 包含底盘 (25 维输入)')
+    
     # 夹爪二值化
     parser.add_argument('--binarize-gripper', action='store_true',
                         help='启用夹爪二值化控制')
@@ -1086,6 +1120,14 @@ def main():
         host = args.server
         port = 50052
     
+    # 构建 Action 配置
+    action_config = ActionConfig(
+        state_includes_chassis=args.state_includes_chassis,
+        execute_chassis=args.execute_chassis,
+        execute_head=not args.no_execute_head,
+        execute_torso=not args.no_execute_torso,
+    )
+    
     # 构建配置
     config = ClientConfig(
         server_host=host,
@@ -1099,6 +1141,7 @@ def main():
         control_way=args.control_way,
         smooth_window=args.smooth,
         max_velocity=args.max_velocity,
+        action_config=action_config,
     )
     
     # 解析相机列表

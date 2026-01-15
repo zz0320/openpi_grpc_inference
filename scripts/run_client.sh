@@ -28,6 +28,11 @@ N_ACTION_STEPS=${N_ACTION_STEPS:-50}
 ENABLE_CAMERA=${ENABLE_CAMERA:-false}
 CAMERAS=${CAMERAS:-"head,wrist_left,wrist_right"}
 
+# Action 配置 (25/22 维控制)
+EXECUTE_CHASSIS=${EXECUTE_CHASSIS:-false}
+EXECUTE_HEAD=${EXECUTE_HEAD:-true}
+EXECUTE_TORSO=${EXECUTE_TORSO:-true}
+
 # 检查必填参数
 if [ -z "$CHECKPOINT" ]; then
     echo "错误: 必须指定 CHECKPOINT 路径"
@@ -40,6 +45,11 @@ if [ -z "$CHECKPOINT" ]; then
     echo "  SERVER=192.168.1.100:50052 \\"
     echo "  PROMPT=\"clear up the desktop\" \\"
     echo "  ./scripts/run_client.sh"
+    echo ""
+    echo "高级选项 (25/22 维控制):"
+    echo "  EXECUTE_CHASSIS=true   # 启用底盘控制 (25 维)"
+    echo "  EXECUTE_HEAD=false     # 禁用头部控制"
+    echo "  EXECUTE_TORSO=false    # 禁用腰部控制"
     exit 1
 fi
 
@@ -58,6 +68,10 @@ if [ "$USE_CHUNK" = "true" ]; then
     echo "N Action Steps: $N_ACTION_STEPS"
 fi
 echo "启用相机: $ENABLE_CAMERA"
+echo "--- Action 配置 ---"
+echo "执行底盘: $EXECUTE_CHASSIS"
+echo "执行头部: $EXECUTE_HEAD"
+echo "执行腰部: $EXECUTE_TORSO"
 echo "=========================================="
 
 # 构建命令
@@ -80,6 +94,19 @@ fi
 if [ "$ENABLE_CAMERA" = "true" ]; then
     CMD="$CMD --enable-camera"
     CMD="$CMD --cameras $CAMERAS"
+fi
+
+# 25/22 维控制
+if [ "$EXECUTE_CHASSIS" = "true" ]; then
+    CMD="$CMD --execute-chassis"
+fi
+
+if [ "$EXECUTE_HEAD" = "false" ]; then
+    CMD="$CMD --no-execute-head"
+fi
+
+if [ "$EXECUTE_TORSO" = "false" ]; then
+    CMD="$CMD --no-execute-torso"
 fi
 
 echo ""

@@ -150,8 +150,10 @@ python3 -m src.client.inference_client \
 | `--n-action-steps` | 每个 chunk 使用的 action 数 | 50 |
 | `--enable-camera` | 启用相机订阅 | False |
 | `--control-freq` | 控制频率 (Hz) | 30 |
-| `--episode` | Episode 索引 | 0 |
-| `--max-frames` | 最大帧数 | 10000 |
+| **`--execute-chassis`** | **执行底盘控制 (25维)** | False |
+| `--no-execute-head` | 禁用头部控制 | False |
+| `--no-execute-torso` | 禁用腰部控制 | False |
+| `--state-includes-chassis` | 输入 state 包含底盘 | False |
 | `--smooth` | 平滑窗口大小 | 0 |
 | `--max-velocity` | 最大速度限制 (rad/frame) | 0 |
 | `--binarize-gripper` | 夹爪二值化 | False |
@@ -205,8 +207,8 @@ python3 -m src.client.inference_client \
 Client 指定模型 ─────► Server 加载模型 (首次连接)
        │
        ▼
-机器人状态 (16维)  ─┐
-                   ├──► gRPC 请求 ──► OpenPi Policy ──► actions (10, 16)
+机器人状态 (25维)  ─┐
+                   ├──► gRPC 请求 ──► OpenPi Policy ──► actions (10, 25)
 相机图像 (3张)     ─┤                                          │
                    │                                           │
 语言指令 (prompt) ─┘                                           ▼
@@ -214,10 +216,10 @@ Client 指定模型 ─────► Server 加载模型 (首次连接)
                                                                │
                       ┌────────────────────────────────────────┘
                       ▼
-              Client 本地消费 action
+              Client 本地消费 action (25维)
                       │
                       ▼
-              扩展为 22 维 (添加 head, torso)
+              过滤为 22 维 (如不需要 chassis)
                       │
                       ▼
               转换为 waypoint 格式
@@ -230,9 +232,39 @@ Client 指定模型 ─────► Server 加载模型 (首次连接)
 
 | 格式 | 维度 | 内容 |
 |------|------|------|
-| OpenPi 模型输出 | 16 | arm_left(7) + arm_right(7) + gripper(2) |
-| LeRobot V2.0 | 22 | 上述 + head(2) + torso(4) |
-| LeRobot V2.0 (含底盘) | 25 | 上述 + chassis(3) |
+| **OpenPi 模型输出** | **25** | arm_left(7) + arm_right(7) + grippers(2) + head(2) + torso(4) + chassis(3) |
+| 执行维度 (不含底盘) | 22 | arm_left(7) + arm_right(7) + grippers(2) + head(2) + torso(4) |
+
+**Action 结构 (25维):**
+```
+[0:7]   - arm_left       (7个关节)
+[7:14]  - arm_right      (7个关节)
+[14]    - gripper_left   (1个)
+[15]    - gripper_right  (1个)
+[16:18] - head           (2个: pitch, yaw)
+[18:22] - torso          (4个关节)
+[22:25] - chassis        (3个: x, y, theta)
+```
+
+### 25/22 维控制模式
+
+| 模式 | 输出维度 | 说明 |
+|------|---------|------|
+| 默认 (不含底盘) | 22 | `--execute-chassis` 未指定 |
+| 含底盘 | 25 | `--execute-chassis` 指定 |
+
+**使用示例:**
+
+```bash
+# 默认模式 (22 维，不控制底盘)
+python3 -m src.client.inference_client --server <IP>:50052 --config pi05_astribot_lora --checkpoint /path/to/ckpt
+
+# 控制底盘 (25 维)
+python3 -m src.client.inference_client --server <IP>:50052 --config pi05_astribot_lora --checkpoint /path/to/ckpt --execute-chassis
+
+# 禁用头部/腰部控制 (只控制手臂)
+python3 -m src.client.inference_client --server <IP>:50052 --config pi05_astribot_lora --checkpoint /path/to/ckpt --no-execute-head --no-execute-torso
+```
 
 ## 📊 性能指标
 

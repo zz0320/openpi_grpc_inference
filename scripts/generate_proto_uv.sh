@@ -1,41 +1,33 @@
 #!/bin/bash
 # 生成 protobuf 代码
-# 自动检测 Python 环境 (适用于 Client 端)
+# 使用 OpenPi 的 uv 环境 (适用于 Server 端)
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 PROJECT_DIR="$(dirname "$SCRIPT_DIR")"
 
+# OpenPi 目录
+OPENPI_DIR=${OPENPI_DIR:-"/root/openpi"}
+
 PROTO_DIR="$PROJECT_DIR/proto"
 OUTPUT_DIR="$PROJECT_DIR/src/generated"
 
-echo "生成 protobuf 代码..."
+echo "生成 protobuf 代码 (uv 环境)..."
+echo "  OpenPi 目录: $OPENPI_DIR"
 echo "  Proto 目录: $PROTO_DIR"
 echo "  输出目录: $OUTPUT_DIR"
 
-mkdir -p "$OUTPUT_DIR"
-
-# 检测 Python 命令
-if command -v python3 &> /dev/null; then
-    PYTHON_CMD="python3"
-    PIP_CMD="pip3"
-elif command -v python &> /dev/null; then
-    PYTHON_CMD="python"
-    PIP_CMD="pip"
-else
-    echo "✗ 未找到 Python，请先安装 Python 或使用 generate_proto_uv.sh"
+# 检查 OpenPi 目录
+if [ ! -d "$OPENPI_DIR" ]; then
+    echo "✗ OpenPi 目录不存在: $OPENPI_DIR"
+    echo "  请设置 OPENPI_DIR 环境变量或使用 generate_proto.sh"
     exit 1
 fi
 
-echo "  使用 Python: $PYTHON_CMD"
+mkdir -p "$OUTPUT_DIR"
 
-# 检查并安装 grpcio-tools
-if ! $PYTHON_CMD -c "import grpc_tools.protoc" 2>/dev/null; then
-    echo "正在安装 grpcio-tools..."
-    $PIP_CMD install grpcio-tools
-fi
-
-# 生成 protobuf 代码
-$PYTHON_CMD -m grpc_tools.protoc \
+# 使用 uv 环境
+cd "$OPENPI_DIR"
+uv run python -m grpc_tools.protoc \
     --proto_path="$PROTO_DIR" \
     --python_out="$OUTPUT_DIR" \
     --grpc_python_out="$OUTPUT_DIR" \
@@ -57,3 +49,4 @@ else
     echo "✗ 生成失败!"
     exit 1
 fi
+
