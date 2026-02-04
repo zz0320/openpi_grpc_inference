@@ -28,18 +28,8 @@ import grpc
 PROJECT_ROOT = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 sys.path.insert(0, PROJECT_ROOT)
 
-# 导入生成的 protobuf 代码
-try:
-    from src.generated import openpi_inference_pb2 as pb2
-    from src.generated import openpi_inference_pb2_grpc as pb2_grpc
-except ImportError:
-    try:
-        from generated import openpi_inference_pb2 as pb2
-        from generated import openpi_inference_pb2_grpc as pb2_grpc
-    except ImportError:
-        pb2 = None
-        pb2_grpc = None
-        print("警告: 未找到 protobuf 生成文件，请先运行 scripts/generate_proto.sh")
+# 导入生成的 protobuf 代码 (统一管理)
+from src.common.proto_imports import pb2, pb2_grpc
 
 # 导入通用模块
 from src.common.config import ClientConfig, ActionConfig
@@ -64,6 +54,7 @@ from src.common.utils import (
     binarize_gripper_action,
     openpi_action_to_waypoint,
     waypoint_to_openpi_state,
+    filter_action,
 )
 
 # 导入日志记录器
@@ -676,6 +667,31 @@ class AstribotController:
             else:
                 logger.warning("Server 未就绪，请确保已配置模型")
     
+    def _apply_action_filter(self, action, current_state=None):
+        """
+        根据 enable_head/torso/chassis 配置过滤 action
+        
+        禁用的部件使用当前关节状态替代模型输出。
+        此过滤在 Client 端执行，Server 返回模型原始输出 (25维)。
+        
+        Args:
+            action: 模型原始 action (list 或 np.ndarray)
+            current_state: 当前关节状态 (list，用于保持禁用部件值)
+            
+        Returns:
+            过滤后的 action (list)
+        """
+        action_arr = np.array(action, dtype=np.float32)
+        state_arr = np.array(current_state, dtype=np.float32) if current_state is not None else None
+        
+        filtered = filter_action(
+            action_arr, state_arr,
+            enable_head=self._action_config.enable_head,
+            enable_torso=self._action_config.enable_torso,
+            enable_chassis=self._action_config.enable_chassis,
+        )
+        return filtered.tolist()
+    
     def set_prompt(self, prompt: str):
         """设置语言指令"""
         self._current_prompt = prompt
@@ -764,6 +780,13 @@ class AstribotController:
         """
         执行一步推理和控制
         
+        Action 处理流水线:
+        1. 获取模型原始输出 (raw_action, 25维)
+        2. 部件过滤 (filtered_action, head/torso/chassis)
+        3. 速度限制 + 平滑 (smoothed_action)
+        4. 夹爪二值化 (可选)
+        5. 发送给机器人 (final_action)
+        
         Returns:
             True 继续, False 结束
         """
@@ -779,7 +802,7 @@ class AstribotController:
         inference_start_time = time.time()
         is_inference_frame = True
         
-        # 根据模式获取 action (Server 返回 22 维，不含 chassis)
+        # 根据模式获取 action (Server 返回 25 维模型原始输出)
         if self._use_chunk and self._chunk_manager is not None:
             action = self._chunk_manager.get_action(
                 state=state,
@@ -813,32 +836,27 @@ class AstribotController:
         
         inference_latency_ms = (time.time() - inference_start_time) * 1000
         
-        # 记录推理日志
-        if self.inference_logger:
-            self.inference_logger.log_step(
-                frame_index=self._frame_index,
-                state=state,
-                action=action,
-                prompt=self._current_prompt,
-                images=images,
-                episode_id=self._episode_id,
-                latency_ms=inference_latency_ms,
-                extra_info={
-                    "use_chunk": self._use_chunk,
-                    "is_inference_frame": is_inference_frame
-                },
-                save_images_this_step=is_inference_frame
-            )
+        # ========== Action 处理流水线 ==========
+        # 阶段 0: 模型原始输出 (25维)
+        raw_action = list(action) if not isinstance(action, list) else list(action)
         
-        # 应用速度限制
+        # 阶段 1: 部件过滤 (head/torso/chassis)
+        # Server 返回 25 维，Client 端根据配置过滤
+        action = self._apply_action_filter(action, current_state=state)
+        filtered_action = list(action)
+        
+        # 阶段 2: 速度限制
         if self.velocity_limiter:
             action = self.velocity_limiter.limit(action)
         
-        # 应用平滑
+        # 阶段 3: 平滑
         if self.smoother:
             action = self.smoother.smooth(action)
         
-        # 应用夹爪二值化
+        # 阶段 2+3 合并为 smoothed (限速 + 平滑后)
+        smoothed_action = list(action) if (self.velocity_limiter or self.smoother) else None
+        
+        # 阶段 4: 夹爪二值化 (可选)
         if self._binarize_gripper:
             action = binarize_gripper_action(
                 action, 
@@ -846,14 +864,43 @@ class AstribotController:
                 gripper_indices=[14, 15]  # 夹爪索引
             )
         
-        # 直接使用收到的 22 维 action 转换为 waypoint
-        # (Server 端已将 25 维模型输出过滤为 22 维)
-        waypoint = openpi_action_to_waypoint(list(action), include_chassis=False)
+        # 最终 action (发给机器人)
+        final_action = list(action)
         
-        # 发送到机器人
+        # 记录完整的 action 处理流水线
+        if self.inference_logger:
+            self.inference_logger.log_step(
+                frame_index=self._frame_index,
+                state=state,
+                action=final_action,
+                prompt=self._current_prompt,
+                images=images,
+                episode_id=self._episode_id,
+                latency_ms=inference_latency_ms,
+                raw_action=raw_action,
+                filtered_action=filtered_action,
+                smoothed_action=smoothed_action,
+                extra_info={
+                    "use_chunk": self._use_chunk,
+                    "is_inference_frame": is_inference_frame,
+                    "enable_head": self._action_config.enable_head,
+                    "enable_torso": self._action_config.enable_torso,
+                    "enable_chassis": self._action_config.enable_chassis,
+                },
+                save_images_this_step=is_inference_frame
+            )
+        
+        # 根据 enable_chassis 决定 waypoint 格式
+        waypoint = openpi_action_to_waypoint(
+            final_action, 
+            include_chassis=self._action_config.enable_chassis
+        )
+        
+        # 发送到机器人 (根据 enable_chassis 选择部件列表)
+        names_list = ASTRIBOT_NAMES_LIST_WITH_CHASSIS if self._action_config.enable_chassis else ASTRIBOT_NAMES_LIST
         if self.astribot:
             self.astribot.set_joints_position(
-                ASTRIBOT_NAMES_LIST,
+                names_list,
                 waypoint,
                 control_way=self.control_way,
                 use_wbc=self._use_wbc
@@ -1058,6 +1105,14 @@ def main():
     parser.add_argument('--n-action-steps', type=int, default=None,
                         help='每个 chunk 使用的 action 数量')
     
+    # Action 过滤配置 (Client 端过滤)
+    parser.add_argument('--execute-chassis', action='store_true',
+                        help='执行 action 时控制底盘 (25维)，默认不控制 (22维)')
+    parser.add_argument('--no-execute-head', action='store_true',
+                        help='禁用头部控制')
+    parser.add_argument('--no-execute-torso', action='store_true',
+                        help='禁用腰部控制')
+    
     # 夹爪二值化
     parser.add_argument('--binarize-gripper', action='store_true',
                         help='启用夹爪二值化控制')
@@ -1092,6 +1147,13 @@ def main():
         host = args.server
         port = 50052
     
+    # 构建 Action 配置 (Client 端过滤)
+    action_config = ActionConfig(
+        execute_chassis=args.execute_chassis,
+        execute_head=not args.no_execute_head,
+        execute_torso=not args.no_execute_torso,
+    )
+    
     # 构建配置
     config = ClientConfig(
         server_host=host,
@@ -1105,6 +1167,7 @@ def main():
         control_way=args.control_way,
         smooth_window=args.smooth,
         max_velocity=args.max_velocity,
+        action_config=action_config,
     )
     
     # 解析相机列表

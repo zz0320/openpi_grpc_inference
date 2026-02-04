@@ -7,7 +7,7 @@
 
 import logging
 import sys
-from typing import List, Optional
+from typing import List, Optional, Union
 import numpy as np
 
 from .constants import (
@@ -20,7 +20,11 @@ from .constants import (
     OPENPI_ACTION_DIM_NO_CHASSIS,
     OPENPI_ACTION_DIM_WITH_CHASSIS,
     OPENPI_ACTION_INDEX,
+    OPENPI_MODEL_OUTPUT_DIM,
 )
+
+# Action 索引配置 (与 OPENPI_ACTION_INDEX 一致，命名风格兼容 LeRobot)
+ACTION_INDEX_CONFIG = OPENPI_ACTION_INDEX
 
 
 def setup_logging(level: str = "INFO", log_file: Optional[str] = None) -> logging.Logger:
@@ -165,6 +169,91 @@ def binarize_gripper_action(
     return action
 
 
+# ============================================================================
+# Action 过滤 (参考 LeRobot 实现，用于 Client 端)
+# ============================================================================
+
+def filter_action(
+    action: np.ndarray,
+    current_state: Optional[np.ndarray] = None,
+    enable_head: bool = True,
+    enable_torso: bool = True,
+    enable_chassis: bool = False,
+) -> np.ndarray:
+    """
+    根据部件启用配置过滤单步 action
+    
+    禁用的部件使用 current_state 对应值替代 (若无则置零)。
+    enable_chassis=False 时截断为 22 维，否则保持 25 维。
+    
+    此函数供 Client 端使用，Server 端返回模型原始输出。
+    
+    Args:
+        action: 模型输出的原始 action (22或25 维)
+        current_state: 当前关节状态 (用于保持禁用部件的值)
+        enable_head: 是否启用头部
+        enable_torso: 是否启用腰部
+        enable_chassis: 是否启用底盘
+        
+    Returns:
+        过滤后的 action (22或25维)
+    """
+    if len(action) != OPENPI_MODEL_OUTPUT_DIM:
+        # 非 25 维，无法按部件过滤，直接返回
+        return action
+    
+    filtered = action.copy()
+    
+    head_start, head_end = ACTION_INDEX_CONFIG['head']
+    torso_start, torso_end = ACTION_INDEX_CONFIG['torso']
+    
+    if not enable_head:
+        if current_state is not None and len(current_state) >= head_end:
+            filtered[head_start:head_end] = current_state[head_start:head_end]
+        else:
+            filtered[head_start:head_end] = 0.0
+    
+    if not enable_torso:
+        if current_state is not None and len(current_state) >= torso_end:
+            filtered[torso_start:torso_end] = current_state[torso_start:torso_end]
+        else:
+            filtered[torso_start:torso_end] = 0.0
+    
+    if enable_chassis:
+        return filtered  # 25 维
+    else:
+        return filtered[:OPENPI_ACTION_DIM_NO_CHASSIS]  # 22 维
+
+
+def filter_action_array(
+    actions: np.ndarray,
+    current_state: Optional[np.ndarray] = None,
+    enable_head: bool = True,
+    enable_torso: bool = True,
+    enable_chassis: bool = False,
+) -> np.ndarray:
+    """
+    对单步 action 或 action chunk 统一执行过滤
+    
+    Args:
+        actions: shape (action_dim,) 单步, 或 (chunk_size, action_dim) chunk
+        current_state: 当前关节状态
+        enable_head/enable_torso/enable_chassis: 部件启用配置
+        
+    Returns:
+        过滤后的 action(s)
+    """
+    kwargs = dict(current_state=current_state, enable_head=enable_head,
+                  enable_torso=enable_torso, enable_chassis=enable_chassis)
+    if actions.ndim == 1:
+        return filter_action(actions, **kwargs)
+    else:
+        if actions.shape[-1] == OPENPI_MODEL_OUTPUT_DIM:
+            filtered = [filter_action(actions[i], **kwargs) for i in range(actions.shape[0])]
+            return np.stack(filtered, axis=0)
+        return actions
+
+
 def filter_action_by_config(
     action: List[float],
     execute_head: bool = True,
@@ -173,9 +262,10 @@ def filter_action_by_config(
     current_state: Optional[List[float]] = None
 ) -> List[float]:
     """
-    根据配置过滤 action
+    [已弃用] 根据配置过滤 action
     
-    将不执行的部件设为当前值（保持不变）或零值
+    请使用 filter_action() 替代，该函数接受 numpy 数组。
+    此函数保留是为了向后兼容。
     
     Args:
         action: 原始 action (25维)
@@ -187,29 +277,17 @@ def filter_action_by_config(
     Returns:
         过滤后的 action (22维或25维)
     """
-    if len(action) < OPENPI_ACTION_DIM_NO_CHASSIS:
-        return action
+    action_arr = np.array(action, dtype=np.float32)
+    state_arr = np.array(current_state, dtype=np.float32) if current_state is not None else None
     
-    action = list(action)
+    filtered = filter_action(
+        action_arr, state_arr,
+        enable_head=execute_head,
+        enable_torso=execute_torso,
+        enable_chassis=execute_chassis
+    )
     
-    # 如果有当前状态，不执行的部件保持当前值
-    if current_state is not None:
-        if not execute_head and len(current_state) > 16:
-            action[16:18] = current_state[16:18]
-        if not execute_torso and len(current_state) > 18:
-            action[18:22] = current_state[18:22]
-    
-    # 是否包含底盘
-    if execute_chassis:
-        # 返回完整 25 维
-        if len(action) >= OPENPI_ACTION_DIM_WITH_CHASSIS:
-            return action[:25]
-        else:
-            # 如果 action 不足 25 维，补零
-            return action + [0.0] * (25 - len(action))
-    else:
-        # 返回 22 维 (去掉底盘)
-        return action[:22]
+    return filtered.tolist()
 
 
 def openpi_action_to_waypoint(

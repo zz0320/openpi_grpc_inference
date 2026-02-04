@@ -36,15 +36,26 @@ logger = logging.getLogger("openpi_inference.client.logger")
 
 @dataclass
 class InferenceLogEntry:
-    """单步推理日志条目"""
+    """
+    单步推理日志条目
+    
+    记录完整的 action 处理流水线:
+    - raw_action: 模型原始输出 (25维)
+    - filtered_action: 部件过滤后 (head/torso/chassis)
+    - smoothed_action: 速度限制 + 平滑后
+    - action: 最终发送给机器人的 action
+    """
     timestamp: float                    # Unix 时间戳
     episode_id: int                     # Episode ID
     frame_index: int                    # 帧索引
     state: List[float]                  # 关节状态
-    action: List[float]                 # 推理输出的 action
+    action: List[float]                 # 最终发送给机器人的 action
     prompt: Optional[str] = None        # 语言指令
     image_paths: Dict[str, str] = None  # 图像文件路径 {camera_name: path}
     latency_ms: Optional[float] = None  # 推理延迟 (毫秒)
+    raw_action: Optional[List[float]] = None        # 模型原始输出 (25维)
+    filtered_action: Optional[List[float]] = None   # 部件过滤后
+    smoothed_action: Optional[List[float]] = None   # 速度限制 + 平滑后
     extra_info: Optional[Dict] = None   # 额外信息
     
     def __post_init__(self):
@@ -178,6 +189,9 @@ class InferenceLogger:
         images: Optional[List[Dict]] = None,
         episode_id: int = 0,
         latency_ms: Optional[float] = None,
+        raw_action: Optional[List[float]] = None,
+        filtered_action: Optional[List[float]] = None,
+        smoothed_action: Optional[List[float]] = None,
         extra_info: Optional[Dict] = None,
         save_images_this_step: bool = True
     ):
@@ -187,11 +201,14 @@ class InferenceLogger:
         Args:
             frame_index: 帧索引
             state: 关节状态 (float list)
-            action: 推理输出的 action (float list)
+            action: 最终发送给机器人的 action (float list)
             prompt: 当前使用的语言指令
             images: 图像列表 [{'name': 'head', 'data': bytes, ...}, ...]
             episode_id: Episode ID
             latency_ms: 推理延迟 (毫秒)
+            raw_action: 模型原始输出 (25维)
+            filtered_action: 部件过滤后的 action
+            smoothed_action: 速度限制 + 平滑后的 action
             extra_info: 额外信息
             save_images_this_step: 是否在当前步保存图像
         """
@@ -213,6 +230,9 @@ class InferenceLogger:
             prompt=prompt,
             image_paths=image_paths,
             latency_ms=latency_ms,
+            raw_action=list(raw_action) if raw_action is not None else None,
+            filtered_action=list(filtered_action) if filtered_action is not None else None,
+            smoothed_action=list(smoothed_action) if smoothed_action is not None else None,
             extra_info=extra_info
         )
         
