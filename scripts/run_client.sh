@@ -24,8 +24,8 @@ CONTROL_FREQ=${CONTROL_FREQ:-30}
 USE_CHUNK=${USE_CHUNK:-true}
 N_ACTION_STEPS=${N_ACTION_STEPS:-50}
 
-# 相机配置
-ENABLE_CAMERA=${ENABLE_CAMERA:-false}
+# 相机配置 (默认启用)
+ENABLE_CAMERA=${ENABLE_CAMERA:-true}
 CAMERAS=${CAMERAS:-"head,wrist_left,wrist_right"}
 
 # Action 配置 (25/22 维控制)
@@ -91,8 +91,10 @@ if [ "$USE_CHUNK" = "true" ]; then
     fi
 fi
 
-if [ "$ENABLE_CAMERA" = "true" ]; then
-    CMD="$CMD --enable-camera"
+# 相机配置 (默认启用，设置 ENABLE_CAMERA=false 禁用)
+if [ "$ENABLE_CAMERA" = "false" ]; then
+    CMD="$CMD --no-camera"
+else
     CMD="$CMD --cameras $CAMERAS"
 fi
 

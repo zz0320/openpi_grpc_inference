@@ -51,7 +51,6 @@ from src.common.utils import (
     setup_logging,
     ActionSmoother,
     VelocityLimiter,
-    binarize_gripper_action,
     openpi_action_to_waypoint,
     waypoint_to_openpi_state,
     filter_action,
@@ -551,13 +550,11 @@ class AstribotController:
     def __init__(
         self, 
         config: ClientConfig, 
-        enable_camera: bool = False, 
+        enable_camera: bool = True, 
         camera_names: List[str] = None,
         use_chunk: bool = False,
         n_action_steps: Optional[int] = None,
-        inference_logger: Optional[InferenceLogger] = None,
-        binarize_gripper: bool = False,
-        gripper_threshold: float = 0.5
+        inference_logger: Optional[InferenceLogger] = None
     ):
         """
         初始化控制器
@@ -569,15 +566,11 @@ class AstribotController:
             use_chunk: 是否使用 chunk 模式
             n_action_steps: chunk 模式下每个 chunk 使用的 action 数量
             inference_logger: 推理日志记录器
-            binarize_gripper: 是否启用夹爪二值化控制
-            gripper_threshold: 夹爪二值化阈值
         """
         self.config = config
         self._use_chunk = use_chunk
         self._n_action_steps = n_action_steps
         self.inference_logger = inference_logger
-        self._binarize_gripper = binarize_gripper
-        self._gripper_threshold = gripper_threshold
         
         logger.info(f"初始化 AstribotController")
         logger.info(f"  - 服务器: {config.server_address}")
@@ -784,8 +777,7 @@ class AstribotController:
         1. 获取模型原始输出 (raw_action, 25维)
         2. 部件过滤 (filtered_action, head/torso/chassis)
         3. 速度限制 + 平滑 (smoothed_action)
-        4. 夹爪二值化 (可选)
-        5. 发送给机器人 (final_action)
+        4. 发送给机器人 (final_action)
         
         Returns:
             True 继续, False 结束
@@ -855,14 +847,6 @@ class AstribotController:
         
         # 阶段 2+3 合并为 smoothed (限速 + 平滑后)
         smoothed_action = list(action) if (self.velocity_limiter or self.smoother) else None
-        
-        # 阶段 4: 夹爪二值化 (可选)
-        if self._binarize_gripper:
-            action = binarize_gripper_action(
-                action, 
-                threshold=self._gripper_threshold,
-                gripper_indices=[14, 15]  # 夹爪索引
-            )
         
         # 最终 action (发给机器人)
         final_action = list(action)
@@ -1077,8 +1061,8 @@ def main():
                         help='PyTorch 设备')
     
     # 相机配置
-    parser.add_argument('--enable-camera', action='store_true',
-                        help='启用相机订阅')
+    parser.add_argument('--no-camera', action='store_true',
+                        help='禁用相机订阅 (默认启用)')
     parser.add_argument('--cameras', type=str, default='head,wrist_left,wrist_right',
                         help='要订阅的相机列表')
     
@@ -1112,12 +1096,6 @@ def main():
                         help='禁用头部控制')
     parser.add_argument('--no-execute-torso', action='store_true',
                         help='禁用腰部控制')
-    
-    # 夹爪二值化
-    parser.add_argument('--binarize-gripper', action='store_true',
-                        help='启用夹爪二值化控制')
-    parser.add_argument('--gripper-threshold', type=float, default=0.5,
-                        help='夹爪二值化阈值')
     
     # 准备位置
     parser.add_argument('--move-to-ready', action='store_true', default=True,
@@ -1191,13 +1169,11 @@ def main():
     try:
         controller = AstribotController(
             config,
-            enable_camera=args.enable_camera,
+            enable_camera=not args.no_camera,
             camera_names=camera_names,
             use_chunk=args.use_chunk,
             n_action_steps=args.n_action_steps,
-            inference_logger=inference_logger,
-            binarize_gripper=args.binarize_gripper,
-            gripper_threshold=args.gripper_threshold
+            inference_logger=inference_logger
         )
         
         run_inference_loop(

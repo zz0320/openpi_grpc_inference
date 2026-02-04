@@ -135,40 +135,6 @@ class VelocityLimiter:
         self._last_action = None
 
 
-def binarize_gripper_action(
-    action: List[float],
-    threshold: float = 0.5,
-    high_value: float = 1.0,
-    low_value: float = 0.0,
-    gripper_indices: List[int] = None
-) -> List[float]:
-    """
-    将夹爪控制二值化 (0/1 控制)
-    
-    当夹爪值超过阈值时设为 high_value，否则设为 low_value
-    
-    Args:
-        action: action 数组
-        threshold: 阈值
-        high_value: 超过阈值时的值
-        low_value: 低于阈值时的值
-        gripper_indices: 夹爪索引列表，默认 [14, 15]
-        
-    Returns:
-        处理后的 action 数组
-    """
-    if gripper_indices is None:
-        gripper_indices = [GRIPPER_LEFT_INDEX, GRIPPER_RIGHT_INDEX]
-    
-    action = list(action)
-    
-    for idx in gripper_indices:
-        if idx < len(action):
-            action[idx] = high_value if action[idx] > threshold else low_value
-    
-    return action
-
-
 # ============================================================================
 # Action 过滤 (参考 LeRobot 实现，用于 Client 端)
 # ============================================================================

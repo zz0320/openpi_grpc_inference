@@ -29,9 +29,7 @@
   },
   "robot": {
     "enable_camera": true,
-    "camera_names": ["head", "wrist_left", "wrist_right"],
-    "binarize_gripper": false,
-    "gripper_threshold": 0.5
+    "camera_names": ["head", "wrist_left", "wrist_right"]
   },
   "logging": {
     "enabled": true,

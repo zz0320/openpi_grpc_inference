@@ -128,14 +128,13 @@ python3 -m src.client.inference_client \
 
 # 完整示例 (启用 Chunk 模式 + 相机)
 python3 -m src.client.inference_client \
-    --server <GPU服务器IP>:50052 \
+    --server 0.0.0.0:50052 \
     --config pi05_astribot_lora \
-    --checkpoint /path/to/checkpoints/pi05_astribot_lora/astribot_lora_exp1/79999 \
+    --checkpoint /root/openpi/checkpoints/pi05_astribot_lora/astribot_lora_exp1/6000 \
     --prompt "clear up the desktop" \
     --device cuda \
     --use-chunk \
     --n-action-steps 50 \
-    --enable-camera \
     --control-freq 30
 ```
 
@@ -150,14 +149,13 @@ python3 -m src.client.inference_client \
 | `--device` | Server 端推理设备 | - |
 | `--use-chunk` | 启用 Chunk 模式 | False |
 | `--n-action-steps` | 每个 chunk 使用的 action 数 | - |
-| `--enable-camera` | 启用相机订阅 | False |
+| `--no-camera` | 禁用相机订阅 | False (启用) |
 | `--control-freq` | 控制频率 (Hz) | 30 |
 | **`--execute-chassis`** | **执行底盘控制 (25维)** | False (22维) |
 | `--no-execute-head` | 禁用头部控制 | False (启用) |
 | `--no-execute-torso` | 禁用腰部控制 | False (启用) |
 | `--smooth` | 平滑窗口大小 | 0 |
 | `--max-velocity` | 最大速度限制 (rad/frame) | 0 |
-| `--binarize-gripper` | 夹爪二值化 | False |
 | `--move-to-ready` | 先移动到准备位置 | True |
 | `--enable-logging` | 启用推理日志 | True |
 | `--log-dir` | 日志保存目录 | ./inference_logs |
